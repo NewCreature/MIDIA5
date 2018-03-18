@@ -1,267 +1,227 @@
-/*         ______   ___    ___ 
- *        /\  _  \ /\_ \  /\_ \ 
- *        \ \ \L\ \\//\ \ \//\ \      __     __   _ __   ___ 
- *         \ \  __ \ \ \ \  \ \ \   /'__`\ /'_ `\/\`'__\/ __`\
- *          \ \ \/\ \ \_\ \_ \_\ \_/\  __//\ \L\ \ \ \//\ \L\ \
- *           \ \_\ \_\/\____\/\____\ \____\ \____ \ \_\\ \____/
- *            \/_/\/_/\/____/\/____/\/____/\/___L\ \/_/ \/___/
- *                                           /\____/
- *                                           \_/__/
- *
- *      ALSA RawMIDI Sound driver.
- *
- *      By Thomas Fjellstrom.
- *
- *      See readme.txt for copyright information.
- */
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <alsa/asoundlib.h>
+#include "midia5.h"
 
-#include "allegro.h"
-
-#if (defined ALLEGRO_WITH_ALSAMIDI) && ((!defined ALLEGRO_WITH_MODULES) || (defined ALLEGRO_MODULE))
-
-#include "allegro/internal/aintern.h"
-
-#ifdef ALLEGRO_QNX
-#include "allegro/platform/aintqnx.h"
-#else
-#include "allegro/platform/aintunix.h"
-#endif
-
-#ifndef SCAN_DEPEND
-   #include <stdlib.h>
-   #include <stdio.h>
-   #include <string.h>
-   #include <errno.h>
-
-   #if ALLEGRO_ALSA_VERSION == 9
-      #define ALSA_PCM_NEW_HW_PARAMS_API 1
-      #include <alsa/asoundlib.h>
-   #else  /* ALLEGRO_ALSA_VERSION == 5 */
-      #include <sys/asoundlib.h>
-   #endif
-
-#endif
-
-
-#define ALSA_RAWMIDI_MAX_ERRORS  3
-
-
-static int alsa_rawmidi_detect(int input);
-static int alsa_rawmidi_init(int input, int voices);
-static void alsa_rawmidi_exit(int input);
-static void alsa_rawmidi_output(int data);
-
-static char alsa_rawmidi_desc[256];
-
-static snd_rawmidi_t *rawmidi_handle = NULL;
-static int alsa_rawmidi_errors = 0;
-
-
-MIDI_DRIVER midi_alsa =
+typedef struct
 {
-   MIDI_ALSA,                /* id */
-   empty_string,             /* name */
-   empty_string,             /* desc */
-   "ALSA RawMIDI",           /* ASCII name */
-   0,                        /* voices */
-   0,                        /* basevoice */
-   0xFFFF,                   /* max_voices */
-   0,                        /* def_voices */
-   -1,                       /* xmin */
-   -1,                       /* xmax */
-   alsa_rawmidi_detect,      /* detect */
-   alsa_rawmidi_init,        /* init */
-   alsa_rawmidi_exit,        /* exit */
-   NULL,                     /* set_mixer_volume */
-   NULL,                     /* get_mixer_volume */
-   alsa_rawmidi_output,      /* raw_midi */
-   _dummy_load_patches,      /* load_patches */
-   _dummy_adjust_patches,    /* adjust_patches */
-   _dummy_key_on,            /* key_on */
-   _dummy_noop1,             /* key_off */
-   _dummy_noop2,             /* set_volume */
-   _dummy_noop3,             /* set_pitch */
-   _dummy_noop2,             /* set_pan */
-   _dummy_noop2              /* set_vibrato */
-};
 
+	snd_seq_t * sequencer;
+	snd_seq_addr_t addr;
+	int in_port[4];
+	int out_port[4];
+	int command_step;
+	int command_type;
+	int command_channel;
+	int command_data[16];
+	int command[16];
+	snd_seq_addr_t port;
 
+} MIDIA5_ALSA_DATA;
 
-/* alsa_rawmidi_detect:
- *  ALSA RawMIDI detection.
- */
-static int alsa_rawmidi_detect(int input)
+/* Open ALSA sequencer wit num_in writeable ports and num_out readable ports. */
+/* The sequencer handle and the port IDs are returned.                        */
+static int open_seq(snd_seq_t **seq_handle, int in_ports[], int out_ports[], int num_in, int num_out)
 {
-#if ALLEGRO_ALSA_VERSION == 9
-   const char *device = NULL;
-#else  /* ALLEGRO_ALSA_VERSION == 5 */
-   int card = -1;
-   int device = -1;
-#endif
-   int ret = FALSE, err;
-   char tmp1[128], tmp2[128], temp[256];
-   snd_rawmidi_t *handle = NULL;
+	int l1;
+	char portname[64];
+	int client;
 
-   if (input) {
-      ret = FALSE;
-   }
-   else {
-#if ALLEGRO_ALSA_VERSION == 9
-      device = get_config_string(uconvert_ascii("sound", tmp1),
-				 uconvert_ascii("alsa_rawmidi_device", tmp2),
-				 "default");
-
-      err = snd_rawmidi_open(NULL, &handle, device, 0);
-#else  /* ALLEGRO_ALSA_VERSION == 5 */
-      card = get_config_int(uconvert_ascii("sound", tmp1),
-			    uconvert_ascii("alsa_rawmidi_card", tmp2),
-			    snd_defaults_rawmidi_card());
-
-      device = get_config_int(uconvert_ascii("sound", tmp1),
-			      uconvert_ascii("alsa_rawmidi_device", tmp2),
-			      snd_defaults_rawmidi_device());
-
-      err = snd_rawmidi_open(&handle, card, device, SND_RAWMIDI_OPEN_OUTPUT_APPEND);
-#endif
-      if (err) {
-	 snprintf(temp, sizeof(temp), "Could not open card/rawmidi device: %s", snd_strerror(err));
-	 ustrzcpy(allegro_error, ALLEGRO_ERROR_SIZE, get_config_text(temp));
-	 ret = FALSE;
-      }
-      else {
-	 snd_rawmidi_close(handle);
-	 ret = TRUE;
-      }
-   }
-
-   return ret;
+	if(snd_seq_open(seq_handle, "default", SND_SEQ_OPEN_DUPLEX, 0) < 0)
+	{
+		fprintf(stderr, "Error opening ALSA sequencer.\n");
+		return -1;
+ 	}
+	snd_seq_set_client_name(*seq_handle, "MIDIA5");
+	snd_seq_connect_to(*seq_handle, 0, 129, 0);
+	client = snd_seq_client_id(*seq_handle);
+	for(l1 = 0; l1 < num_in; l1++)
+	{
+    	sprintf(portname, "MIDI Router IN %d", l1);
+    	if((in_ports[l1] = snd_seq_create_simple_port(*seq_handle, portname, SND_SEQ_PORT_CAP_WRITE|SND_SEQ_PORT_CAP_SUBS_WRITE, SND_SEQ_PORT_TYPE_APPLICATION)) < 0)
+		{
+			fprintf(stderr, "Error creating sequencer port.\n");
+			return -1;
+		}
+	}
+	for(l1 = 0; l1 < num_out; l1++)
+	{
+		sprintf(portname, "MIDI Router OUT %d", l1);
+		if((out_ports[l1] = snd_seq_create_simple_port(*seq_handle, portname, SND_SEQ_PORT_CAP_READ|SND_SEQ_PORT_CAP_SUBS_READ, SND_SEQ_PORT_TYPE_APPLICATION)) < 0)
+		{
+			fprintf(stderr, "Error creating sequencer port.\n");
+			return -1;
+		}
+	}
+	return 0;
 }
 
-
-
-/* alsa_rawmidi_init:
- *  Inits the ALSA RawMIDI interface.
- */
-static int alsa_rawmidi_init(int input, int voices)
+void * _midia5_init_output_platform_data(MIDIA5_OUTPUT_HANDLE * hp, int device)
 {
-   int ret, err;
-   char tmp1[128], tmp2[128], temp[256];
-#if ALLEGRO_ALSA_VERSION == 9
-   snd_rawmidi_info_t *info;
-   const char *device = NULL;
-#else  /* ALLEGRO_ALSA_VERSION == 5 */
-   snd_rawmidi_info_t info;
-   int card = -1;
-   int device = -1;
-#endif
+    MIDIA5_ALSA_DATA * cm_data;
+	int err;
 
-   if (input) {
-      ret = -1;
-   }
-   else {
-#if ALLEGRO_ALSA_VERSION == 9
-      device = get_config_string(uconvert_ascii("sound", tmp1),
-				 uconvert_ascii("alsa_rawmidi_device", tmp2),
-				 "default");
-
-      err = snd_rawmidi_open(NULL, &rawmidi_handle, device, 0);
-#else  /* ALLEGRO_ALSA_VERSION == 5 */
-      card = get_config_int(uconvert_ascii("sound", tmp1),
-			    uconvert_ascii("alsa_rawmidi_card", tmp2),
-			    snd_defaults_rawmidi_card());
-
-      device = get_config_int(uconvert_ascii("sound", tmp1),
-			     uconvert_ascii("alsa_rawmidi_device", tmp2),
-			     snd_defaults_rawmidi_device());
-
-      err = snd_rawmidi_open(&rawmidi_handle, card, device, SND_RAWMIDI_OPEN_OUTPUT_APPEND);
-#endif
-      if (err) {
-	 snprintf(temp, sizeof(temp), "Could not open card/rawmidi device: %s", snd_strerror(err));
-	 ustrzcpy(allegro_error, ALLEGRO_ERROR_SIZE, get_config_text(temp));
-	 ret = -1;
-      }
-      else {
-         ret = 0;
-      }
-   }
-
-   if (rawmidi_handle) {
-#if ALLEGRO_ALSA_VERSION == 9
-      snd_rawmidi_nonblock(rawmidi_handle, 0);
-      snd_rawmidi_info_malloc(&info);
-      snd_rawmidi_info(rawmidi_handle, info);
-      _al_sane_strncpy(alsa_rawmidi_desc, snd_rawmidi_info_get_name(info), sizeof(alsa_rawmidi_desc));
-#else  /* ALLEGRO_ALSA_VERSION == 5 */
-      snd_rawmidi_block_mode(rawmidi_handle, 1);
-      snd_rawmidi_info(rawmidi_handle, &info);
-      _al_sane_strncpy(alsa_rawmidi_desc, info.name, sizeof(alsa_rawmidi_desc));
-#endif
-      midi_alsa.desc = alsa_rawmidi_desc;
-      alsa_rawmidi_errors = 0;
-   }
-
-   return ret;
+    cm_data = malloc(sizeof(MIDIA5_ALSA_DATA));
+    if(cm_data)
+    {
+		cm_data->command_step = 0;
+		if(open_seq(&cm_data->sequencer, cm_data->in_port, cm_data->out_port, 1, 1) < 0)
+		{
+			fprintf(stderr, "ALSA Error.\n");
+			exit(1);
+		}
+		snd_seq_parse_address(cm_data->sequencer, &cm_data->addr, "129:0");
+    }
+    return cm_data;
 }
 
-
-
-/* alsa_rawmidi_exit:
- *   Cleans up.
- */
-static void alsa_rawmidi_exit(int input)
+void _midia5_free_output_platform_data(MIDIA5_OUTPUT_HANDLE * hp)
 {
-   if (rawmidi_handle) {
-#if ALLEGRO_ALSA_VERSION == 9
-      snd_rawmidi_drain(rawmidi_handle);
-#else  /* ALLEGRO_ALSA_VERSION == 5 */
-      snd_rawmidi_output_drain(rawmidi_handle);
-#endif
-      snd_rawmidi_close(rawmidi_handle);
-   }
+    MIDIA5_ALSA_DATA * cm_data = (MIDIA5_ALSA_DATA *)hp->platform_data;
+	snd_seq_event_type_t event;
 
-   rawmidi_handle = NULL;
+    free(cm_data);
 }
 
-
-
-/* alsa_rawmidi_output:
- *   Outputs MIDI data.
- */
-static void alsa_rawmidi_output(int data)
+void _midia5_platform_send_data(MIDIA5_OUTPUT_HANDLE * hp, int data)
 {
-   int err;
+    MIDIA5_ALSA_DATA * cm_data = (MIDIA5_ALSA_DATA *)hp->platform_data;
+	snd_seq_event_t ev;
 
-   /* If there are too many errors, just give up.  Otherwise the calling thread
-    * can end up consuming CPU time for no reason.  It probably means the user
-    * hasn't configured ALSA properly.
-    */
-   if (alsa_rawmidi_errors > ALSA_RAWMIDI_MAX_ERRORS) {
-      return;
-   }
-
-   err = snd_rawmidi_write(rawmidi_handle, &data, sizeof(char));
-   if (err) {
-      alsa_rawmidi_errors++;
-      if (alsa_rawmidi_errors == ALSA_RAWMIDI_MAX_ERRORS) {
-	  TRACE("al-alsamidi: too many errors, giving up\n");
-      }
-   }
+	switch(cm_data->command_step)
+	{
+		case 0:
+		{
+			cm_data->command_type = data & 0xF0;
+			cm_data->command_channel = data & 0x0F;
+			switch(cm_data->command_type)
+			{
+				case 0x80:
+				case 0x90:
+				case 0xA0:
+				case 0xB0:
+				case 0xE0:
+				case 0xC0:
+				case 0xD0:
+				{
+					cm_data->command_step = 1;
+					break;
+				}
+			}
+			break;
+		}
+		case 1:
+		{
+			cm_data->command_data[0] = data;
+			switch(cm_data->command_type)
+			{
+				case 0x80:
+				case 0x90:
+				case 0xA0:
+				case 0xB0:
+				{
+					cm_data->command_step = 2;
+					break;
+				}
+				case 0xC0:
+				{
+					snd_seq_ev_clear(&ev);
+					snd_seq_ev_set_pgmchange(&ev, cm_data->command_channel, cm_data->command_data[0]);
+					snd_seq_ev_set_direct(&ev);
+					ev.dest = cm_data->addr;
+					snd_seq_event_output_direct(cm_data->sequencer, &ev);
+					snd_seq_drain_output(cm_data->sequencer);
+					cm_data->command_step = 0;
+					break;
+				}
+				case 0xD0:
+				{
+					snd_seq_ev_clear(&ev);
+					snd_seq_ev_set_chanpress(&ev, cm_data->command_channel, cm_data->command_data[0]);
+					snd_seq_ev_set_direct(&ev);
+					ev.dest = cm_data->addr;
+					snd_seq_event_output_direct(cm_data->sequencer, &ev);
+					snd_seq_drain_output(cm_data->sequencer);
+					cm_data->command_step = 0;
+					break;
+				}
+				case 0xE0:
+				{
+					snd_seq_ev_clear(&ev);
+					snd_seq_ev_set_pitchbend(&ev, cm_data->command_channel, cm_data->command_data[0]);
+					snd_seq_ev_set_direct(&ev);
+					ev.dest = cm_data->addr;
+					snd_seq_event_output_direct(cm_data->sequencer, &ev);
+					snd_seq_drain_output(cm_data->sequencer);
+					cm_data->command_step = 0;
+					break;
+				}
+			}
+			break;
+		}
+		case 2:
+		{
+			cm_data->command_data[1] = data;
+			switch(cm_data->command_type)
+			{
+				case 0x80:
+				{
+					snd_seq_ev_clear(&ev);
+					snd_seq_ev_set_noteoff(&ev, cm_data->command_channel, cm_data->command_data[0], cm_data->command_data[1]);
+					snd_seq_ev_set_direct(&ev);
+					ev.dest = cm_data->addr;
+					snd_seq_event_output_direct(cm_data->sequencer, &ev);
+					snd_seq_drain_output(cm_data->sequencer);
+					cm_data->command_step = 0;
+					break;
+				}
+				case 0x90:
+				{
+					snd_seq_ev_clear(&ev);
+					snd_seq_ev_set_noteon(&ev, cm_data->command_channel, cm_data->command_data[0], cm_data->command_data[1]);
+					snd_seq_ev_set_direct(&ev);
+					ev.dest = cm_data->addr;
+					snd_seq_event_output_direct(cm_data->sequencer, &ev);
+					snd_seq_drain_output(cm_data->sequencer);
+					cm_data->command_step = 0;
+					break;
+				}
+				case 0xA0:
+				{
+					snd_seq_ev_clear(&ev);
+					snd_seq_ev_set_keypress(&ev, cm_data->command_channel, cm_data->command_data[0], cm_data->command_data[1]);
+					snd_seq_ev_set_direct(&ev);
+					ev.dest = cm_data->addr;
+					snd_seq_event_output_direct(cm_data->sequencer, &ev);
+					snd_seq_drain_output(cm_data->sequencer);
+					cm_data->command_step = 0;
+					break;
+				}
+				case 0xB0:
+				{
+					snd_seq_ev_clear(&ev);
+					snd_seq_ev_set_controller(&ev, cm_data->command_channel, cm_data->command_data[0], cm_data->command_data[1]);
+					snd_seq_ev_set_direct(&ev);
+					ev.dest = cm_data->addr;
+					snd_seq_event_output_direct(cm_data->sequencer, &ev);
+					snd_seq_drain_output(cm_data->sequencer);
+					cm_data->command_step = 0;
+					break;
+				}
+			}
+			break;
+		}
+	}
 }
 
-
-
-#ifdef ALLEGRO_MODULE
-
-/* _module_init:
- *   Called when loaded as a dynamically linked module.
- */
-void _module_init(int system_driver)
+void _midia5_platform_reset_output_device(MIDIA5_OUTPUT_HANDLE * hp)
 {
-   _unix_register_midi_driver(MIDI_ALSA, &midi_alsa, TRUE, TRUE);
 }
 
-#endif /* ALLEGRO_MODULE */
+bool _midia5_platform_set_output_gain(MIDIA5_OUTPUT_HANDLE * hp, float gain)
+{
+    MIDIA5_ALSA_DATA * cm_data = (MIDIA5_ALSA_DATA *)hp->platform_data;
 
-#endif /* MIDI_ALSA */
-
+	return false;
+}
