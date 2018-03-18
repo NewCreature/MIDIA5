@@ -1,4 +1,5 @@
 #include <allegro5/allegro5.h>
+#include <stdio.h>
 #include "midia5.h"
 #include "rtk/midi.h"
 #include "rtk/io_allegro.h"
@@ -126,13 +127,13 @@ static void send_midi_event_data(MIDIA5_OUTPUT_HANDLE * hp, RTK_MIDI * mp, unsig
 				case RTK_MIDI_EVENT_TYPE_NOTE_ON:
 				case RTK_MIDI_EVENT_TYPE_KEY_AFTER_TOUCH:
 				case RTK_MIDI_EVENT_TYPE_CONTROLLER_CHANGE:
-				case RTK_MIDI_EVENT_TYPE_PITCH_WHEEL_CHANGE:
 				{
 					midia5_send_data(hp, mp->track[i]->event[track_event[i]]->type + mp->track[i]->event[track_event[i]]->channel);
 					midia5_send_data(hp, mp->track[i]->event[track_event[i]]->data_i[0]);
 					midia5_send_data(hp, (float)mp->track[i]->event[track_event[i]]->data_i[1] * volume);
 					break;
 				}
+				case RTK_MIDI_EVENT_TYPE_PITCH_WHEEL_CHANGE:
 				case RTK_MIDI_EVENT_TYPE_PROGRAM_CHANGE:
 				case RTK_MIDI_EVENT_TYPE_CHANNEL_AFTER_TOUCH:
 				{
@@ -227,12 +228,6 @@ int main(int argc, char * argv[])
 	if(!codec_data)
 	{
 		printf("Failed to load midi file: %s\n", argv[1]);
-		return -1;
-	}
-	output_handle = midia5_create_output_handle(0);
-	if(!output_handle)
-	{
-		printf("Unable to create output handle!\n");
 		return -1;
 	}
 	if(!al_init())
