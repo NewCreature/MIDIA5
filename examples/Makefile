@@ -12,16 +12,25 @@ MACOSX_CXX = /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.
 #LFLAGS = $(MACOSX_LINKER_SETTINGS)
 #PLATFORM_LIBRARIES = -lallegro_main-static -framework IOKit -framework AudioToolbox -framework OpenGL -framework OpenAL -framework Cocoa
 #PLATFORM_OBJECTS = ../src/macos/coremidi.o
+#EX_PLAY_MIDI_LIBRARIES = `pkg-config --libs --static allegro-static-5` $(PLATFORM_LIBRARIES)
 
 # compile for Linux
+#CC = gcc
+#CFLAGS = -I../include -O2
+#LFLAGS =
+#PLATFORM_LIBRARIES = -lasound
+#PLATFORM_OBJECTS = ../src/unix/alsa.o
+#EX_PLAY_MIDI_LIBRARIES = `pkg-config --libs --static allegro-static-5` $(PLATFORM_LIBRARIES)
+
+#compile for Windows
 CC = gcc
 CFLAGS = -I../include -O2
-LFLAGS =
-PLATFORM_LIBRARIES = -lasound
-PLATFORM_OBJECTS = ../src/unix/alsa.o
+LFLAGS = -static -static-libgcc -static-libstdc++ -mwindows
+PLATFORM_LIBRARIES = -luuid -lkernel32 -lwinmm -lpsapi -lopengl32 -lglu32 -luser32 -lcomdlg32 -lgdi32 -lshell32 -lole32 -lshlwapi -ld3d9 -ldsound -lstdc++
+PLATFORM_OBJECTS = ../src/windows/midiout.o
+EX_PLAY_MIDI_LIBRARIES = -lallegro-static $(PLATFORM_LIBRARIES)
 
 EX_PLAY_MIDI_OFILES = ex_play_midi.o rtk/io_allegro.o rtk/io.o rtk/midi.o ../src/midia5.o $(PLATFORM_OBJECTS)
-EX_PLAY_MIDI_LIBRARIES = `pkg-config --libs --static allegro-static-5` $(PLATFORM_LIBRARIES)
 
 ex_play_midi: $(EX_PLAY_MIDI_OFILES)
 	$(CC) $(EX_PLAY_MIDI_OFILES) $(MACOSX_LINKER_SETTINGS) $(EX_PLAY_MIDI_LIBRARIES) -o ex_play_midi
